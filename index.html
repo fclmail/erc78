@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Atomic Arbitrage Scanner</title>
+  <style>
+    body {
+      background-color: #003300;
+      color: #ccffcc;
+      font-family: monospace;
+      padding: 20px;
+    }
+    textarea {
+      width: 100%;
+      height: 200px;
+      background: #001a00;
+      color: #ccffcc;
+      font-size: 14px;
+    }
+    .button {
+      padding: 10px;
+      background-color: #00cc66;
+      border: none;
+      font-weight: bold;
+      cursor: pointer;
+      color: black;
+      margin-bottom: 10px;
+      margin-right: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Atomic Arbitrage Simulator</h2>
+
+  <button class="button" onclick="connectWallet()">🔌 Connect Wallet</button>
+  <button class="button" onclick="connectMobile()">📱 Mobile Connect</button>
+
+  <br><br>
+  <label>Trade Amount (USDC): <input type="number" id="amount" value="10"></label><br>
+  <label>Minimum Profit (USDC): <input type="number" id="minProfit" value="0.1"></label><br>
+  <label>Slippage %: <input type="number" id="slippage" value="0.05"></label><br>
+  <div>Wallet USDC Balance: <span id="balance">0</span> USDC</div>
+  <button onclick="startScan()">Start Scanning</button>
+  <textarea id="log"></textarea>
+
+  <!-- Load ethers.js after HTML -->
+  <script src="https://cdn.ethers.io/lib/ethers-5.2.umd.min.js"></script>
+  <script>
+    let provider, signer, contract;
+
+    const contractAddress = "0x98BD86aDa64DC52E60392a43050fad5E9cAcb62F";
+    const contractAbi = [/* YOUR CONTRACT ABI HERE - UNCHANGED */];
+
+    const tokens = {
+      usdc: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+      dai: "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063",
+      weth: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
+      wbtc: "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6",
+      aave: "0xD6DF932A45C0f255f85145f286eA0b292B21C90B"
+    };
+
+    const routers = {
+      quickswap: "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
+      sushiswap: "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506",
+      dfyn: "0xA102072A4C07F06EC3B4900FDC4C7B80b6c57429"
+    };
+
+    async function connectWallet() {
+      if (typeof window.ethereum === 'undefined') {
+        alert("MetaMask not found. Try Mobile Connect.");
+        return;
+      }
+      try {
+        provider = new ethers.providers.Web3Provider(window.ethereum);
+        await provider.send("eth_requestAccounts", []);
+        signer = provider.getSigner();
+        const addr = await signer.getAddress();
+        log("✅ Wallet connected: " + addr);
+        await updateBalance();
+      } catch (err) {
+        alert("❌ Connection rejected: " + err.message);
+      }
+    }
+
+    function connectMobile() {
+      const deepLink = `https://metamask.app.link/dapp/fclmail.github.io/block4/`;
+      window.location.href = deepLink;
+    }
+
+    async function updateBalance() {
+      const usdc = new ethers.Contract(tokens.usdc, ["function balanceOf(address) view returns (uint256)"], provider);
+      const address = await signer.getAddress();
+      const balance = await usdc.balanceOf(address);
+      document.getElementById("balance").textContent = ethers.utils.formatUnits(balance, 6);
+    }
+
+    async function startScan() {
+      if (!signer) {
+        alert("Connect wallet first.");
+        return;
+      }
+
+      contract = new ethers.Contract(contractAddress, contractAbi, signer);
+      await updateBalance();
+
+      setInterval(async () => {
+        await updateBalance();
+        const amountIn = ethers.utils.parseUnits(document.getElementById("amount").value, 6);
+        const minProfit = ethers.utils.parseUnits(document.getElementById("minProfit").value, 6);
+
+        for (const tokenSymbol of ["dai", "weth", "wbtc", "aave"]) {
+          for (const router1 of Object.values(routers)) {
+            for (const router2 of Object.values(routers)) {
+              if (router1 === router2) continue;
+              const tokenOut = tokens[tokenSymbol];
+              const tokenIn = tokens.usdc;
+
+              try {
+                const amountsOut1 = await new ethers.Contract(router1, ["function getAmountsOut(uint, address[]) view returns (uint[])"], provider).getAmountsOut(amountIn, [tokenIn, tokenOut]);
+                const tokenAmount = amountsOut1[1];
+
+                const amountsOut2 = await new ethers.Contract(router2, ["function getAmountsOut(uint, address[]) view returns (uint[])"], provider).getAmountsOut(tokenAmount, [tokenOut, tokenIn]);
+                const finalAmount = amountsOut2[1];
+                const profit = finalAmount.sub(amountIn);
+
+                log(`Checking ${tokenSymbol.toUpperCase()} via ${router1.slice(0,6)} → ${router2.slice(0,6)} | Est. Profit: ${ethers.utils.formatUnits(profit, 6)} USDC`);
+
+                if (profit.gt(minProfit)) {
+                  log(`🚀 Executing arbitrage for ${tokenSymbol.toUpperCase()}...`);
+                  const tx = await contract.executeArbitrage(router1, router2, tokenIn, tokenOut, amountIn, minProfit);
+                  const receipt = await tx.wait();
+                  log(`✅ Success! Tx: ${receipt.transactionHash}`);
+                  await updateBalance();
+                }
+              } catch (e) {
+                log(`⚠️ Error: ${e.message}`);
+              }
+            }
+          }
+        }
+      }, 10000);
+    }
+
+    function log(msg) {
+      const logBox = document.getElementById("log");
+      logBox.value += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+  </script>
+</body>
+</html>
